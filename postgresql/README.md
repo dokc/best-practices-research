@@ -23,7 +23,7 @@ agnostic.
 
 The following instructions are here to help you gather **baselines** of the I/O operations performance.
 This is required to make informed decisions on your architecture, by comparing results obtained with
-different setups and configurations of your Kubernetes system (e.g. CSI, disks).
+different setups and configurations of your Kubernetes system (e.g. sotrageClass, CSI, disks).
 
 **Do not use these results as absolute values.**
 
@@ -65,17 +65,17 @@ best fit your use case.
 Please, refer to the FIO section in the `README.md` of the [../common/](../common) directory in this
 project to learn how to deploy FIO tests in your Kubernetes environment.
 
-### pgbench Benchmark
+### `pgbench` Benchmark
 
 https://www.postgresql.org/docs/current/pgbench.html
 
 This tool aims to give an idea of how many transactions per second (TPS) a PostgreSQL system can
-achieve. It will exec [TPC-b (sort of) test](https://www.postgresql.org/docs/current/pgbench.html#TRANSACTIONS-AND-SCRIPTS),
-by default, on a database previously initialized by `pgbench` itself. You can also run customized
-test script to collect TPS for your own database schema. In this guide we will take baselines by
-using the default TPC-b-like test.
+achieve. By default, it will exec a [TPC-b (sort of) test](https://www.postgresql.org/docs/current/pgbench.html#TRANSACTIONS-AND-SCRIPTS)
+on a database previously initialized by `pgbench` itself. You can also run customized test script
+to collect TPS for your own database schema. In this guide we will take baselines by using the
+default TPC-b-like test.
 
-To actually run `pgbench` first you need to have a PostgreSQL database deployed in your Kubernetes.
+To actually run `pgbench` you need to have a PostgreSQL database deployed in your Kubernetes.
 `pgbench` will then connect to the PostgreSQL endpoint and issue its own commands. In this example
 we will deploy PostgreSQL with [CloudNativePG](https://cloudnative-pg.io/).
 
@@ -83,20 +83,19 @@ Follow the instructions to install CloudNativePG at this link:
 https://cloudnative-pg.io/documentation/current/installation_upgrade/
 
 The CloudNativePG Operator offers a way to natively run PostgreSQL on Kubernetes, by allowing us to
-declaratively set a complete configuration in a `Cluster` Custom Resource Definition (CRD).
+declaratively set many configuration aspects of a PostgreSQL Cluster, using the `Cluster` Custom
+Resource Definition (CRD).
 
-Example with useful comments:
+Example with explanatory comments:
 
 ```yaml
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: benchmark-pg
-  labels:
-    app: pgbench
   namespace: benchmark
 spec:
-  # Number of PostgreSQL nodes ( >=2 means one primary and n standbys)
+  # Number of PostgreSQL instances ( n>=2 means one primary and n-1 standbys)
   instances: 1
   imageName: 'ghcr.io/cloudnative-pg/postgresql:17.2'
 
@@ -148,7 +147,7 @@ spec:
     storageClass: <storage-class-name>
 ```
 
-#### Phase 1: Initialization
+#### Phase 1: initialization
 
 The TPC-b test requires a database with specific tables to write into.
 This is done by the initialization phase of `pgbench` with the following command:
@@ -156,10 +155,10 @@ This is done by the initialization phase of `pgbench` with the following command
 ```shell
 pgbench -i -s <scale-factor> 
 ```
-where the <scale-factor> is the value that set the size of the DB (indexes included),
-following this formula: `(0.0669 * DB_SIZE * 1024) - 0.5` .
+where `<scale-factor>` is the value that sets the size of the DB (indexes included),
+following this formula: `(0.0669 * DB_SIZE * 1024) - 0.5`.
 
-For example, to get a ~200GB database size, you have to set the scale factor to: 13700.
+For example, to get a ~200GB database size, you set the scale factor to: 13700.
 
 The resulting Kubernetes resources will be:
 
@@ -168,22 +167,24 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   labels:
-    pgBenchJob: benchmark-pg
+    benchmark: pgbench
   name: pgbench-init
   namespace: benchmark
 spec:
   template:
     metadata:
       labels:
-        pgBenchJob: benchmark-pg
+        benchmark: pgbench
     spec:
       containers:
+      # Initialize the DB with a scale factor of 13700 (~200GB)
       - args:
         - -i
         - -s
         - "13700"
         command:
         - pgbench
+        # Environment variable to connect to the CNPG database
         env:
         - name: PGHOST
           value: benchmark-pg-rw
@@ -204,14 +205,197 @@ spec:
         image: ghcr.io/cloudnative-pg/postgresql:17.2
         imagePullPolicy: Always
         name: pgbench
+
       restartPolicy: Never
 ```
 
-Once the job is done, you can recover the resulting activity time from the logs of the pod:
+Once the job is done, you can recover the timing from the logs of the pod:
 
 ```shell
-kubectl logs -n benchmark <pgbench-pod-name> | tail -n 20 > pgbench-init.log
+kubectl logs -n benchmark <pgbench-init-pod-name> | tail -n 20 > pgbench-init.log
 ```
 
-#### Phase 2: Running test
+#### Phase 2: running test
 
+The actual benchmark execution is triggered with the following `pgbench` command:
+
+```shell
+pgbench -t <time> -c <clients> -j <jobs>
+```
+where:
+
+* `<time>` is the time in seconds the test must last
+* `<clients>` is the amount of concurrent client sessions opened to the database
+* `<jobs>` is the amount of processes spawned by the `pgbench` to parallelize the benchmark
+
+Therefore, the Kubernetes resources should be like the following:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    benchmark: pgbench
+  name: pgbench-run
+  namespace: benchmark
+spec:
+  template:
+    metadata:
+      labels:
+        benchmark: pgbench
+    spec:
+      containers:
+      - args:
+        - --time
+        - "<time>"
+        - --client
+        - "<clients>"
+        - --jobs
+        - "<jobs>"
+        command:
+        - pgbench
+        # Environment variable to connect to the CNPG database
+        env:
+        - name: PGHOST
+          value: benchmark-pg-rw
+        - name: PGDATABASE
+          value: app
+        - name: PGPORT
+          value: "5432"
+        - name: PGUSER
+          valueFrom:
+            secretKeyRef:
+              key: username
+              name: benchmark-pg-app
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: password
+              name: benchmark-pg-app
+        image: ghcr.io/cloudnative-pg/postgresql:17.2
+        imagePullPolicy: Always
+        name: pgbench
+
+      restartPolicy: Never
+```
+
+Once the test is done, collect the results from the log:
+
+```shell
+kubectl logs -n benchmark <pgbench-run-pod-name> | tail -n 20 > pgbench.log
+```
+
+### `pg_test_fsync` Benchmark
+
+https://www.postgresql.org/docs/current/pgtestfsync.html
+
+The `pg_test_fsync` tool helps determine the fastest sync method for flushing WAL files into disk,
+between the available ones in the host Operating System. In this guide we will use it to gather
+baselines of the maximum throughput to be compared between different storage choices.
+
+This command has only 2 parameters as arguments:
+
+```shell
+pg_test_fsync -f <file-name> -s <time>
+```
+where:
+
+* `<file-name>` is the test file to write on the target path
+* `<time>` is the time in seconds each test should last
+
+We will run it by creating a Kubernetes Job that will schedule the Pod in the target node using the
+previously created PVC with the target `storageClass` we want to test.
+
+Example of the PVC:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  labels:
+    benchmark: pgFsync
+  name: fsync-wal-pvc
+  namespace: benchmark
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      # Define how large the pvc should be: e.g. 1Gi
+      storage: <pvc-size>
+  storageClassName: <storage-class-name>
+```
+
+Example of the `pg_test_fsync` Job:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    benchmark: pgFsync
+  name: pg-fsync-test
+  namespace: benchmark
+spec:
+  template:
+    metadata:
+      labels:
+        benchmark: pgFsync
+    spec:
+
+     ## In case nodes are reserved to run just PostgreSQL workloads, they should be tainted.
+     ## To schedule this pod on the target nodes you need tolerations:
+     #
+     # tolerations:
+     #   - key: "node-role.kubernetes.io/postgres"
+     #     operator: "Equal"
+     #     effect: "NoSchedule"
+     ##
+     ## To prevent scheduling this pod on a node different from the target one, you can use the Affinity:
+     #
+     # affinity:
+     #   podAntiAffinity:
+     #     requiredDuringSchedulingIgnoredDuringExecution:
+     #       - labelSelector:
+     #           matchExpressions:
+     #             - key: benchmark
+     #               operator: In
+     #               values:
+     #                 - pgFsync
+     #         topologyKey: kubernetes.io/hostname
+     #
+     ## Or you can use a node selector as well:
+     ##
+     # nodeSelector:
+     #   kubernetes.io/hostname: "<node-name>"
+
+      containers:
+      # For example: run each test for 30 seconds against the /wal/fsync-test-file file
+      - args:
+        - -f
+        - "/wal/fsync-test-file"
+        - -s
+        - "30"
+        command:
+        - pg_test_fsync
+        image: ghcr.io/cloudnative-pg/postgresql:17.2
+        imagePullPolicy: Always
+        name: fsync-test
+        volumeMounts:
+          - mountPath: /wal
+            name: wal
+
+      # Specify the PVC to use
+      volumes:
+        - name: wal
+          persistentVolumeClaim:
+            claimName: fsync-wal-pvc
+
+      restartPolicy: Never
+```
+
+Once the test is done, collect the results from the pod's log:
+
+```shell
+kubectl logs -n benchmark <pg-fsync-test-pod-name> fsync-test
+```

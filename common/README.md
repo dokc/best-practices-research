@@ -65,7 +65,7 @@ spec:
   storageClassName: <storage-class-name>
 ```
 
-Finally the FIO Deployment should look like as follows:
+Finally, the FIO Deployment should look like as follows:
 
 ```yaml
 apiVersion: apps/v1
@@ -127,7 +127,7 @@ spec:
           name: tmp
 ```
 
-Note: the YAML mnanifest must be adjusted in accord to the test environment (i.e. taints, tolerations,
+Note: the YAML manifest must be adjusted in accord to the test environment (e.g. taints, tolerations,
 node selectors, and labels to select the correct node in case of local storage).
 
 This deployment runs the All-In-One FIO image released by Ryan Wallner:
