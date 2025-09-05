@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: seq-writes-test-fio
+  namespace: benchmark
+data:
+  job: |-
+    [read]
+        direct=1
+        bs=8k
+        size=10G
+        time_based=1
+        runtime=300
+        ioengine=libaio
+        log_avg_msec=1000
+        directory=/data
+        readwrite=write
+        write_bw_log=write
+        write_lat_log=write
+        write_iops_log=write
